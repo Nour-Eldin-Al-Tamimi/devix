@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "User": {
+      "collection": "users",
+      "description": "User profile and subscription metadata",
+      "fields": {
+        "uid": { "type": "string", "description": "Firebase Auth user ID" },
+        "email": { "type": "string", "description": "User email address" },
+        "createdAt": { "type": "string", "description": "Account creation timestamp" },
+        "plan": { "type": "string", "description": "Account plan: free or pro" },
+        "isPro": { "type": "boolean", "description": "Whether user has active Lifetime Pro access" },
+        "paypalOrderId": { "type": "string", "description": "PayPal Order ID for Pro activation" },
+        "paypalTransactionId": { "type": "string", "description": "PayPal Capture Transaction ID" },
+        "proActivatedAt": { "type": "string", "description": "Timestamp when Pro was activated" }
+      }
+    },
+    "SavedProject": {
+      "collection": "users/{userId}/savedProjects",
+      "description": "Saved project blueprints belonging to a user",
+      "fields": {
+        "id": { "type": "string", "description": "Blueprint ID" },
+        "title": { "type": "string", "description": "Project title" },
+        "tagline": { "type": "string", "description": "Project tagline" },
+        "level": { "type": "string", "description": "Developer level" },
+        "skills": { "type": "array", "description": "Associated skills" },
+        "goal": { "type": "string", "description": "Goal type" },
+        "projectType": { "type": "string", "description": "Project category" },
+        "availableTime": { "type": "string", "description": "Estimated timeframe" },
+        "matchScore": { "type": "number", "description": "Skill match score" },
+        "overview": { "type": "string", "description": "Project overview" },
+        "problemStatement": { "type": "string", "description": "Problem statement" },
+        "targetAudience": { "type": "string", "description": "Target audience" },
+        "whyItProvesSkills": { "type": "array", "description": "Skills demonstrated" },
+        "architecture": { "type": "object", "description": "System architecture breakdown" },
+        "databaseSchema": { "type": "array", "description": "SQL schema tables" },
+        "apiEndpoints": { "type": "array", "description": "REST API contracts" },
+        "milestones": { "type": "array", "description": "Milestone phases" },
+        "cvBulletPoints": { "type": "array", "description": "CV bullet points" },
+        "interviewQuestions": { "type": "array", "description": "Interview talking points" },
+        "starterFiles": { "type": "array", "description": "Starter template files" },
+        "readmeMarkdown": { "type": "string", "description": "Generated README.md" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "tags": { "type": "array", "description": "Project tags" }
+      }
+    }
+  }
+}

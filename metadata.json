@@ -1,0 +1,6 @@
+{
+  "name": "DEVIX - Project Idea Generator",
+  "description": "Tailored project idea generator for developers designed to prove skills and stand out with custom blueprints, CV bullet points, and architecture plans.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

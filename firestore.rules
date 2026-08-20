@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      // User can read their own user document
+      allow read: if isOwner(userId);
+      
+      // User can create their own profile upon registration with free tier
+      allow create: if isOwner(userId)
+                    && request.resource.data.uid == userId
+                    && request.resource.data.isPro == false
+                    && request.resource.data.plan == 'free'
+                    && request.resource.data.paypalOrderId == null
+                    && request.resource.data.paypalTransactionId == null
+                    && request.resource.data.proActivatedAt == null;
+      
+      // User cannot modify isPro, plan, paypalOrderId, paypalTransactionId, or proActivatedAt directly from client
+      allow update: if isOwner(userId)
+                    && request.resource.data.isPro == resource.data.isPro
+                    && request.resource.data.plan == resource.data.plan
+                    && request.resource.data.paypalOrderId == resource.data.paypalOrderId
+                    && request.resource.data.paypalTransactionId == resource.data.paypalTransactionId
+                    && request.resource.data.proActivatedAt == resource.data.proActivatedAt;
+      
+      allow delete: if false;
+
+      // Subcollection for user's saved blueprints
+      match /savedProjects/{projectId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+  }
+}
