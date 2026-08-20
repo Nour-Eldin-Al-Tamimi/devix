@@ -1032,6 +1032,10 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   next(err);
 });
 
+// Export Express app for Vercel Serverless Functions and modular runtimes
+export { app };
+export default app;
+
 // Vite Middleware integration for Full-Stack React
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
@@ -1054,4 +1058,8 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only launch the standalone HTTP server when not running in Vercel Serverless Functions
+if (!process.env.VERCEL) {
+  startServer();
+}
+
