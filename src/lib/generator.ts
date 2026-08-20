@@ -1,4 +1,4 @@
-import { ProjectBlueprint, DeveloperLevel, GoalType } from '../src/types';
+import { ProjectBlueprint, DeveloperLevel, GoalType } from '../types';
 
 export interface GeneratorParams {
   level: string;

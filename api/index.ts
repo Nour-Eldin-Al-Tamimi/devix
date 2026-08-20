@@ -8,7 +8,7 @@ import {
   buildGeminiPrompt,
   validateAndEnforceConsistency,
   generateBespokeFallbackProject,
-} from './_generator';
+} from '../src/lib/generator';
 
 dotenv.config();
 
