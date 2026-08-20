@@ -8,7 +8,7 @@ import {
   buildGeminiPrompt,
   validateAndEnforceConsistency,
   generateBespokeFallbackProject,
-} from './generator';
+} from './_generator';
 
 dotenv.config();
 
@@ -213,6 +213,28 @@ export class RateLimiter {
 // --- EXPRESS APPLICATION SETUP ---
 const app = express();
 const projectRateLimiter = new RateLimiter();
+
+// Header-aware path normalization middleware for Vercel Serverless / Reverse Proxy environments
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  const matchedHeader = (req.headers['x-matched-path'] ||
+    req.headers['x-forwarded-url'] ||
+    req.headers['x-now-route-matches']) as string | undefined;
+
+  if (typeof matchedHeader === 'string' && matchedHeader.length > 0) {
+    const rawPath = matchedHeader.split('?')[0];
+    if (
+      rawPath.startsWith('/api') ||
+      rawPath.startsWith('/generate-project') ||
+      rawPath.startsWith('/health') ||
+      rawPath.startsWith('/beta') ||
+      rawPath.startsWith('/paypal')
+    ) {
+      const urlObj = new URL(req.url, 'http://localhost');
+      req.url = rawPath + (urlObj.search || '');
+    }
+  }
+  next();
+});
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -1210,27 +1232,26 @@ app.post(['/api/paypal/capture-order', '/paypal/capture-order'], async (req: Req
   }
 });
 
-// Guard: Ensure unhandled /api/* routes return JSON 404, preventing HTML SPA router intercept
-app.all(['/api/*', '/*'], (req: Request, res: Response, next: NextFunction) => {
-  if (req.url.startsWith('/api') || req.originalUrl?.startsWith('/api') || req.path?.startsWith('/api')) {
+// Terminal 404 handler ensuring unmatched /api/* requests return cleanly as JSON
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const urlPath = req.path || req.url || '';
+  const origPath = req.originalUrl || '';
+  if (urlPath.startsWith('/api') || origPath.startsWith('/api')) {
     res.setHeader('Content-Type', 'application/json');
     return res.status(404).json({
-      error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
+      error: `API endpoint not found: ${req.method} ${origPath || urlPath}`,
     });
   }
   next();
 });
 
-// Global Express error handler ensuring JSON responses for all API calls
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+// Global Express error handler ensuring JSON responses for all API errors
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled server error on', req.method, req.url, err);
-  if (req.url.startsWith('/api') || req.originalUrl?.startsWith('/api')) {
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(err.status || 500).json({
-      error: err.message || 'Internal Server Error',
-    });
-  }
-  next(err);
+  res.setHeader('Content-Type', 'application/json');
+  return res.status(err.status || 500).json({
+    error: err.message || 'Internal Server Error',
+  });
 });
 
 export { app };
