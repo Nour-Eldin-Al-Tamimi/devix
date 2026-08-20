@@ -18,28 +18,39 @@ const projectRateLimiter = new RateLimiter();
 
 app.use(express.json({ limit: '10mb' }));
 
-// --- FIREBASE ADMIN INITIALIZATION ---
+// --- FIREBASE ADMIN INITIALIZATION (LAZY) ---
 let adminApp: App | null = null;
-function getAdminApp(): App {
+function getAdminApp(): App | null {
   if (!adminApp) {
-    const existingApps = getApps();
-    if (existingApps.length === 0) {
-      adminApp = initializeApp({
-        projectId: firebaseConfig.projectId,
-      });
-    } else {
-      adminApp = existingApps[0]!;
+    try {
+      const existingApps = getApps();
+      if (existingApps.length === 0) {
+        adminApp = initializeApp({
+          projectId: firebaseConfig.projectId,
+        });
+      } else {
+        adminApp = existingApps[0]!;
+      }
+    } catch (err) {
+      console.warn('Firebase Admin app initialization note:', err);
+      return null;
     }
   }
   return adminApp;
 }
 
-function getAdminFirestore(): Firestore {
-  const currentApp = getAdminApp();
-  if (firebaseConfig.firestoreDatabaseId) {
-    return getFirestore(currentApp, firebaseConfig.firestoreDatabaseId);
+function getAdminFirestore(): Firestore | null {
+  try {
+    const currentApp = getAdminApp();
+    if (!currentApp) return null;
+    if (firebaseConfig.firestoreDatabaseId) {
+      return getFirestore(currentApp, firebaseConfig.firestoreDatabaseId);
+    }
+    return getFirestore(currentApp);
+  } catch (err) {
+    console.warn('Firestore admin instance note:', err);
+    return null;
   }
-  return getFirestore(currentApp);
 }
 
 // In-memory server-authoritative order registry associating PayPal orders with Firebase UIDs
@@ -66,8 +77,10 @@ async function authenticateUserFromRequest(
   if (token && typeof token === 'string' && token.length > 20) {
     try {
       const currentApp = getAdminApp();
-      const decoded = await getAuth(currentApp).verifyIdToken(token);
-      return { uid: decoded.uid, email: decoded.email };
+      if (currentApp) {
+        const decoded = await getAuth(currentApp).verifyIdToken(token);
+        return { uid: decoded.uid, email: decoded.email };
+      }
     } catch (e: any) {
       console.warn('ID token verification note:', e?.message || e);
     }
@@ -91,19 +104,21 @@ async function grantLifetimeProInFirestore(
   // 1. Try Firebase Admin SDK
   try {
     const adminFirestore = getAdminFirestore();
-    const userDocRef = adminFirestore.collection('users').doc(uid);
-    await userDocRef.set(
-      {
-        plan: 'pro',
-        isPro: true,
-        paypalOrderId: orderId,
-        paypalTransactionId: transactionId,
-        proActivatedAt: now,
-      },
-      { merge: true }
-    );
-    console.log(`[Firestore Admin] Successfully activated Lifetime Pro for user: ${uid}`);
-    return true;
+    if (adminFirestore) {
+      const userDocRef = adminFirestore.collection('users').doc(uid);
+      await userDocRef.set(
+        {
+          plan: 'pro',
+          isPro: true,
+          paypalOrderId: orderId,
+          paypalTransactionId: transactionId,
+          proActivatedAt: now,
+        },
+        { merge: true }
+      );
+      console.log(`[Firestore Admin] Successfully activated Lifetime Pro for user: ${uid}`);
+      return true;
+    }
   } catch (err: any) {
     console.warn(
       `[Firestore Admin] Admin SDK direct write note (${err?.message}), executing Firestore REST API fallback:`,
@@ -149,23 +164,25 @@ async function checkOrderAlreadyClaimedByOtherUser(
 ): Promise<boolean> {
   try {
     const adminFirestore = getAdminFirestore();
-    const snap1 = await adminFirestore
-      .collection('users')
-      .where('paypalOrderId', '==', orderId)
-      .get();
-    for (const doc of snap1.docs) {
-      if (doc.id !== currentUid) {
-        return true;
-      }
-    }
-    if (transactionId) {
-      const snap2 = await adminFirestore
+    if (adminFirestore) {
+      const snap1 = await adminFirestore
         .collection('users')
-        .where('paypalTransactionId', '==', transactionId)
+        .where('paypalOrderId', '==', orderId)
         .get();
-      for (const doc of snap2.docs) {
+      for (const doc of snap1.docs) {
         if (doc.id !== currentUid) {
           return true;
+        }
+      }
+      if (transactionId) {
+        const snap2 = await adminFirestore
+          .collection('users')
+          .where('paypalTransactionId', '==', transactionId)
+          .get();
+        for (const doc of snap2.docs) {
+          if (doc.id !== currentUid) {
+            return true;
+          }
         }
       }
     }
@@ -180,10 +197,12 @@ async function checkUserIsPro(uid: string): Promise<boolean> {
   if (!uid) return false;
   try {
     const adminFirestore = getAdminFirestore();
-    const doc = await adminFirestore.collection('users').doc(uid).get();
-    if (doc.exists) {
-      const data = doc.data();
-      return Boolean(data?.isPro === true || data?.plan === 'pro');
+    if (adminFirestore) {
+      const doc = await adminFirestore.collection('users').doc(uid).get();
+      if (doc.exists) {
+        const data = doc.data();
+        return Boolean(data?.isPro === true || data?.plan === 'pro');
+      }
     }
   } catch (err) {
     console.warn(`[Firestore Pro Check] Note checking user ${uid}:`, err);

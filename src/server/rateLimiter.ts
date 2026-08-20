@@ -36,13 +36,19 @@ export class RateLimiter {
   constructor(config: Partial<RateLimitConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    // Periodic sweep every 5 minutes to prevent memory leaks
-    this.sweepInterval = setInterval(() => {
-      this.cleanup();
-    }, 5 * 60 * 1000);
+    // Periodic sweep every 5 minutes when running in persistent servers
+    if (typeof setInterval !== 'undefined' && !process.env.VERCEL) {
+      try {
+        this.sweepInterval = setInterval(() => {
+          this.cleanup();
+        }, 5 * 60 * 1000);
 
-    if (this.sweepInterval.unref) {
-      this.sweepInterval.unref();
+        if (this.sweepInterval && typeof this.sweepInterval.unref === 'function') {
+          this.sweepInterval.unref();
+        }
+      } catch (e) {
+        // Fallback for isolated runtime
+      }
     }
   }
 
