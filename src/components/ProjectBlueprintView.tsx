@@ -19,7 +19,10 @@ import {
   ExternalLink,
   ChevronRight,
   ShieldCheck,
-  Cpu
+  Cpu,
+  AlertCircle,
+  GitBranch,
+  Gauge
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { ProjectBlueprint } from '../types';
@@ -281,6 +284,73 @@ export const ProjectBlueprintView: React.FC<ProjectBlueprintViewProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Difficulty & Scope Calibration */}
+          {blueprint.difficultyReasoning && (
+            <div className="bg-[#FCF9F4] border border-[#E5DDD2] rounded-3xl p-6 sm:p-8 space-y-3">
+              <div className="flex items-center gap-2">
+                <Gauge className="w-5 h-5 text-[#7A5338]" />
+                <h3 className="font-serif text-xl font-bold text-[#1F1B18]">
+                  Difficulty Calibration ({blueprint.level})
+                </h3>
+              </div>
+              <p className="text-xs sm:text-sm text-[#50443D] leading-relaxed">
+                {blueprint.difficultyReasoning}
+              </p>
+            </div>
+          )}
+
+          {/* Implementation Status Scope Breakdown */}
+          {blueprint.implementationStatus && (
+            <div className="bg-[#FCF9F4] border border-[#E5DDD2] rounded-3xl p-6 sm:p-8 space-y-4">
+              <div className="flex items-center gap-2">
+                <GitBranch className="w-5 h-5 text-[#7A5338]" />
+                <h3 className="font-serif text-xl font-bold text-[#1F1B18]">
+                  Architecture Scope & Implementation Status
+                </h3>
+              </div>
+              <p className="text-xs sm:text-sm text-[#75675C]">
+                Explicitly distinguishes complete core components from planned extensions to avoid fabricated claims:
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <div className="bg-[#EBF7EE] border border-emerald-200 p-4 rounded-2xl space-y-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    Implemented
+                  </span>
+                  <ul className="text-xs text-[#2D4A33] space-y-1.5 list-disc list-inside">
+                    {blueprint.implementationStatus.implemented?.map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="bg-[#FFF9EB] border border-amber-200 p-4 rounded-2xl space-y-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-amber-600" />
+                    Scaffolded
+                  </span>
+                  <ul className="text-xs text-[#523E1E] space-y-1.5 list-disc list-inside">
+                    {blueprint.implementationStatus.scaffolded?.map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="bg-[#F4F5F7] border border-slate-200 p-4 rounded-2xl space-y-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Circle className="w-4 h-4 text-slate-500" />
+                    Planned
+                  </span>
+                  <ul className="text-xs text-[#3E454F] space-y-1.5 list-disc list-inside">
+                    {blueprint.implementationStatus.planned?.map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -348,6 +418,42 @@ export const ProjectBlueprintView: React.FC<ProjectBlueprintViewProps> = ({
                 {blueprint.architecture.deployment}
               </p>
             </div>
+
+            {/* Technical Trade-offs & Decisions */}
+            {blueprint.technicalDecisions && blueprint.technicalDecisions.length > 0 && (
+              <div className="bg-[#FFF8F5] border border-[#E5DDD2] p-5 rounded-2xl space-y-3">
+                <div className="flex items-center gap-2 text-[#7A5338] font-semibold text-xs uppercase tracking-wider">
+                  <GitBranch className="w-4 h-4" />
+                  <span>Key Architectural Trade-offs & Decisions</span>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {blueprint.technicalDecisions.map((dec, i) => (
+                    <div key={i} className="text-xs sm:text-sm text-[#50443D] flex items-start gap-2">
+                      <span className="text-[#7A5338] font-bold">•</span>
+                      <span>{dec}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Limitations & Scope Boundaries */}
+            {blueprint.limitations && blueprint.limitations.length > 0 && (
+              <div className="bg-[#FFF8F5] border border-[#E5DDD2] p-5 rounded-2xl space-y-3">
+                <div className="flex items-center gap-2 text-[#7A5338] font-semibold text-xs uppercase tracking-wider">
+                  <AlertCircle className="w-4 h-4" />
+                  <span>Explicit Scope Boundaries & Limitations</span>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {blueprint.limitations.map((lim, i) => (
+                    <div key={i} className="text-xs sm:text-sm text-[#50443D] flex items-start gap-2">
+                      <span className="text-[#7A5338] font-bold">•</span>
+                      <span>{lim}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -13,6 +13,8 @@ interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   isPro: boolean;
+  isBeta: boolean;
+  betaGenerationsRemaining: number;
   loading: boolean;
   authModalOpen: boolean;
   authModalMode: AuthModalMode;
@@ -20,6 +22,8 @@ interface AuthContextType {
   closeAuthModal: () => void;
   setAuthModalMode: (mode: AuthModalMode) => void;
   activateProLocally: () => void;
+  activateBetaLocally: (generations?: number) => void;
+  decrementBetaLocally: () => void;
   logout: () => Promise<void>;
 }
 
@@ -36,6 +40,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return localStorage.getItem('devix_is_pro_v1') === 'true';
     } catch (e) {
       return false;
+    }
+  });
+  const [localBetaGenerations, setLocalBetaGenerations] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('devix_beta_generations_v1');
+      return stored ? Math.max(0, parseInt(stored, 10) || 0) : 0;
+    } catch (e) {
+      return 0;
     }
   });
 
@@ -55,9 +67,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Ensure document exists in Firestore
           await syncUserProfile(currentUser);
 
-          // Real-time listener for profile changes (such as Pro activation)
+          // Real-time listener for profile changes (such as Pro activation or Beta codes)
           unsubscribeSnapshot = listenToUserProfile(currentUser.uid, (profile) => {
             setUserProfile(profile);
+            if (profile?.betaGenerationsRemaining !== undefined) {
+              setLocalBetaGenerations(profile.betaGenerationsRemaining);
+              try {
+                localStorage.setItem('devix_beta_generations_v1', String(profile.betaGenerationsRemaining));
+              } catch (e) {
+                // ignore
+              }
+            }
             setLoading(false);
           });
         } catch (error) {
@@ -97,6 +117,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const activateBetaLocally = (generations: number = 100) => {
+    setLocalBetaGenerations(generations);
+    try {
+      localStorage.setItem('devix_beta_generations_v1', String(generations));
+    } catch (e) {
+      console.warn('Could not save Beta generations to localStorage:', e);
+    }
+  };
+
+  const decrementBetaLocally = () => {
+    setLocalBetaGenerations((prev) => {
+      const next = Math.max(0, prev - 1);
+      try {
+        localStorage.setItem('devix_beta_generations_v1', String(next));
+      } catch (e) {
+        // ignore
+      }
+      return next;
+    });
+  };
+
   const logout = async () => {
     await firebaseSignOut(auth);
     setUserProfile(null);
@@ -105,12 +146,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // isPro is active if either Firestore profile says so, or local storage contains verified purchase
   const isPro = Boolean(userProfile?.isPro || localPro);
 
+  // Beta status & remaining quota
+  const betaGenerationsRemaining = userProfile?.betaGenerationsRemaining !== undefined
+    ? userProfile.betaGenerationsRemaining
+    : localBetaGenerations;
+
+  const isBeta = Boolean(userProfile?.isBeta || betaGenerationsRemaining > 0);
+
   return (
     <AuthContext.Provider
       value={{
         user,
         userProfile,
         isPro,
+        isBeta,
+        betaGenerationsRemaining,
         loading,
         authModalOpen,
         authModalMode,
@@ -118,6 +168,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         closeAuthModal,
         setAuthModalMode,
         activateProLocally,
+        activateBetaLocally,
+        decrementBetaLocally,
         logout,
       }}
     >

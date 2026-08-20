@@ -91,6 +91,15 @@ export interface ProjectBlueprint {
   interviewQuestions: InterviewQuestion[];
   starterFiles: StarterFile[];
   readmeMarkdown: string;
+  difficultyReasoning?: string;
+  implementationStatus?: {
+    implemented: string[];
+    scaffolded: string[];
+    planned: string[];
+  };
+  technicalDecisions?: string[];
+  limitations?: string[];
+  metricsToMeasureLater?: string[];
   createdAt: string;
   tags: string[];
 }
@@ -109,9 +118,22 @@ export interface UserProfile {
   createdAt: string;
   plan: 'free' | 'pro';
   isPro: boolean;
+  isBeta?: boolean;
+  betaGenerationsRemaining?: number;
+  redeemedBetaCode?: string | null;
+  betaRedeemedAt?: string | null;
   paypalOrderId: string | null;
   paypalTransactionId: string | null;
   proActivatedAt: string | null;
+}
+
+export interface BetaRedeemResponse {
+  success: boolean;
+  generationsGranted: number;
+  generationsRemaining: number;
+  code?: string;
+  message?: string;
+  error?: string;
 }
 
 export type AuthModalMode = 'signin' | 'signup' | 'forgot-password';

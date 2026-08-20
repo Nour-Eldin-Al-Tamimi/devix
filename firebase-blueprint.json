@@ -9,9 +9,24 @@
         "createdAt": { "type": "string", "description": "Account creation timestamp" },
         "plan": { "type": "string", "description": "Account plan: free or pro" },
         "isPro": { "type": "boolean", "description": "Whether user has active Lifetime Pro access" },
+        "isBeta": { "type": "boolean", "description": "Whether user has redeemed a Beta Access Code" },
+        "betaGenerationsRemaining": { "type": "number", "description": "Remaining count of granted beta generations" },
+        "redeemedBetaCode": { "type": "string", "description": "Beta code redeemed by user" },
+        "betaRedeemedAt": { "type": "string", "description": "Timestamp when beta code was redeemed" },
         "paypalOrderId": { "type": "string", "description": "PayPal Order ID for Pro activation" },
         "paypalTransactionId": { "type": "string", "description": "PayPal Capture Transaction ID" },
         "proActivatedAt": { "type": "string", "description": "Timestamp when Pro was activated" }
+      }
+    },
+    "BetaCode": {
+      "collection": "beta_codes",
+      "description": "One-time redeemable beta access codes granting 100 generations",
+      "fields": {
+        "code": { "type": "string", "description": "Beta access code string" },
+        "status": { "type": "string", "description": "Status of the code: active or redeemed" },
+        "generations_granted": { "type": "number", "description": "Number of generations granted (100)" },
+        "redeemed_by": { "type": "string", "description": "User ID who redeemed this code" },
+        "redeemed_at": { "type": "string", "description": "Timestamp when code was redeemed" }
       }
     },
     "SavedProject": {

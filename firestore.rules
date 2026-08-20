@@ -24,13 +24,15 @@ service cloud.firestore {
                     && request.resource.data.paypalTransactionId == null
                     && request.resource.data.proActivatedAt == null;
       
-      // User cannot modify isPro, plan, paypalOrderId, paypalTransactionId, or proActivatedAt directly from client
+      // User cannot modify isPro, plan, paypalOrderId, paypalTransactionId, proActivatedAt, or beta fields directly from client
       allow update: if isOwner(userId)
                     && request.resource.data.isPro == resource.data.isPro
                     && request.resource.data.plan == resource.data.plan
                     && request.resource.data.paypalOrderId == resource.data.paypalOrderId
                     && request.resource.data.paypalTransactionId == resource.data.paypalTransactionId
-                    && request.resource.data.proActivatedAt == resource.data.proActivatedAt;
+                    && request.resource.data.proActivatedAt == resource.data.proActivatedAt
+                    && (!('isBeta' in request.resource.data) || request.resource.data.isBeta == resource.data.get('isBeta', false))
+                    && (!('betaGenerationsRemaining' in request.resource.data) || request.resource.data.betaGenerationsRemaining == resource.data.get('betaGenerationsRemaining', 0));
       
       allow delete: if false;
 
@@ -38,6 +40,11 @@ service cloud.firestore {
       match /savedProjects/{projectId} {
         allow read, write: if isOwner(userId);
       }
+    }
+
+    // Beta access codes collection: server-authoritative Admin SDK access only
+    match /beta_codes/{codeId} {
+      allow read, write: if false;
     }
   }
 }

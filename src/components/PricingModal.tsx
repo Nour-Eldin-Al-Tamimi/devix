@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Check, Sparkles, Zap, Shield, AlertCircle, RefreshCw, UserCheck, LogIn } from 'lucide-react';
+import { X, Check, Sparkles, Zap, Shield, AlertCircle, RefreshCw, UserCheck, LogIn, KeyRound } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { PayPalScriptProvider, PayPalButtons } from '@paypal/react-paypal-js';
 import { useAuth } from '../context/AuthContext';
@@ -17,7 +17,7 @@ export const PricingModal: React.FC<PricingModalProps> = ({
   isPro,
   onUpgradeToPro,
 }) => {
-  const { user, activateProLocally } = useAuth();
+  const { user, activateProLocally, activateBetaLocally, isBeta, betaGenerationsRemaining } = useAuth();
   const [isProcessing, setIsProcessing] = useState(false);
   const [upgradedSuccess, setUpgradedSuccess] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
@@ -25,10 +25,21 @@ export const PricingModal: React.FC<PricingModalProps> = ({
   const [paypalClientId, setPaypalClientId] = useState<string>('sb');
   const [isConfigured, setIsConfigured] = useState<boolean>(false);
 
+  // Beta Access state
+  const [showBetaInput, setShowBetaInput] = useState(false);
+  const [betaCode, setBetaCode] = useState('');
+  const [isRedeemingBeta, setIsRedeemingBeta] = useState(false);
+  const [betaError, setBetaError] = useState<string | null>(null);
+  const [betaSuccess, setBetaSuccess] = useState(false);
+
   useEffect(() => {
     if (!isOpen) {
       setShowPayPalButtons(false);
       setPaymentError(null);
+      setShowBetaInput(false);
+      setBetaCode('');
+      setBetaError(null);
+      setBetaSuccess(false);
       return;
     }
 
@@ -51,6 +62,67 @@ export const PricingModal: React.FC<PricingModalProps> = ({
   const handleStartCheckout = () => {
     setPaymentError(null);
     setShowPayPalButtons(true);
+  };
+
+  const handleRedeemBetaCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = betaCode.trim().toUpperCase();
+    if (!cleanCode) {
+      setBetaError('Please enter a Beta Access Code.');
+      return;
+    }
+
+    setIsRedeemingBeta(true);
+    setBetaError(null);
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      };
+      let idToken: string | undefined;
+      if (user) {
+        try {
+          idToken = await user.getIdToken();
+          headers['Authorization'] = `Bearer ${idToken}`;
+        } catch (e) {
+          // Token note
+        }
+      }
+
+      const res = await fetch('/api/beta/redeem', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          code: cleanCode,
+          userId: user?.uid,
+          idToken,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Invalid or already redeemed Beta Access Code.');
+      }
+
+      setBetaSuccess(true);
+      activateBetaLocally(data.generationsRemaining ?? 100);
+      confetti({
+        particleCount: 80,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#9A6F52', '#7A5338', '#EAE1DC', '#F0DCD0'],
+      });
+
+      setTimeout(() => {
+        onClose();
+      }, 1600);
+    } catch (err: any) {
+      console.error('Beta redemption error:', err);
+      setBetaError(err.message || 'Failed to redeem Beta Access Code.');
+    } finally {
+      setIsRedeemingBeta(false);
+    }
   };
 
   return (
@@ -380,6 +452,89 @@ export const PricingModal: React.FC<PricingModalProps> = ({
                   <p className="text-[10px] text-center text-[#75675C] mt-2">
                     100% Satisfaction Guarantee • Sandbox Test Mode
                   </p>
+
+                  {/* Minimal, secondary Beta Access Code redemption */}
+                  <div className="pt-3 border-t border-[#D5C3B9]/70 mt-2">
+                    {!showBetaInput ? (
+                      <button
+                        type="button"
+                        id="toggle-beta-code-btn"
+                        onClick={() => {
+                          setShowBetaInput(true);
+                          setBetaError(null);
+                        }}
+                        className="text-[11px] text-[#75675C] hover:text-[#7A5338] transition-colors flex items-center justify-center gap-1.5 mx-auto font-medium cursor-pointer"
+                      >
+                        <KeyRound className="w-3 h-3 text-[#9A6F52]" />
+                        <span>Have a Beta Access Code?</span>
+                      </button>
+                    ) : (
+                      <div className="bg-[#F4EDE5] border border-[#D5C3B9] rounded-2xl p-3 space-y-2.5 animate-in fade-in duration-150">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-[#1F1B18] flex items-center gap-1">
+                            <KeyRound className="w-3.5 h-3.5 text-[#7A5338]" />
+                            <span>Redeem Beta Code</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowBetaInput(false);
+                              setBetaError(null);
+                            }}
+                            className="text-[10px] text-[#75675C] hover:text-[#1F1B18] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+
+                        {betaSuccess ? (
+                          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-start gap-2">
+                            <Check className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                            <div>
+                              <span className="font-semibold block">Beta Access Activated!</span>
+                              <span className="text-[11px]">You have 100 free generations available.</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <form onSubmit={handleRedeemBetaCode} className="space-y-2">
+                            <div className="flex gap-2">
+                              <input
+                                id="beta-code-input"
+                                type="text"
+                                value={betaCode}
+                                onChange={(e) => {
+                                  setBetaCode(e.target.value.toUpperCase());
+                                  setBetaError(null);
+                                }}
+                                placeholder="DEVIX-BETA-XXXXXXXX"
+                                className="flex-1 bg-white border border-[#D5C3B9] rounded-xl px-2.5 py-1.5 text-xs font-mono tracking-wider uppercase text-[#1F1B18] placeholder:text-[#A89A90] focus:outline-none focus:border-[#7A5338] focus:ring-1 focus:ring-[#7A5338]"
+                                disabled={isRedeemingBeta}
+                              />
+                              <button
+                                id="redeem-beta-code-btn"
+                                type="submit"
+                                disabled={isRedeemingBeta || !betaCode.trim()}
+                                className="bg-[#7A5338] hover:bg-[#67432A] disabled:opacity-50 text-white text-xs font-semibold px-3 py-1.5 rounded-xl transition-all shadow-xs flex items-center gap-1 cursor-pointer shrink-0"
+                              >
+                                {isRedeemingBeta ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <span>Redeem</span>
+                                )}
+                              </button>
+                            </div>
+
+                            {betaError && (
+                              <div className="p-2 bg-[#FFF1F0] border border-[#FFDAD6] rounded-lg text-[11px] text-rose-800 flex items-start gap-1.5">
+                                <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                                <span>{betaError}</span>
+                              </div>
+                            )}
+                          </form>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

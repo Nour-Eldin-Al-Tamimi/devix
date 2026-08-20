@@ -22,12 +22,12 @@ const STORAGE_KEY_SAVED = 'devix_saved_blueprints_v1';
 const STORAGE_KEY_USAGE = 'devix_usage_count_v1';
 
 function AppContent() {
-  const { user, isPro, openAuthModal } = useAuth();
+  const { user, isPro, isBeta, betaGenerationsRemaining, decrementBetaLocally, openAuthModal } = useAuth();
   const [skills, setSkills] = useState<string[]>(['Python', 'React', 'SQL']);
   const [currentBlueprint, setCurrentBlueprint] = useState<ProjectBlueprint | null>(null);
   const [savedProjects, setSavedProjects] = useState<ProjectBlueprint[]>([]);
   const [usageCount, setUsageCount] = useState<number>(3);
-  const maxUsage = isPro ? 999 : 5;
+  const maxUsage = isPro ? 999 : (isBeta && betaGenerationsRemaining > 0 ? 100 : 5);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingStep, setLoadingStep] = useState<string>('');
@@ -85,7 +85,8 @@ function AppContent() {
 
   // Project generation handler
   const handleGenerate = async (input: ProjectGeneratorInput) => {
-    if (!isPro && usageCount >= maxUsage) {
+    const hasBetaGenerations = isBeta && betaGenerationsRemaining > 0;
+    if (!isPro && !hasBetaGenerations && usageCount >= 5) {
       setIsPricingOpen(true);
       return;
     }
@@ -133,14 +134,18 @@ function AppContent() {
       const blueprint: ProjectBlueprint = await response.json();
       setCurrentBlueprint(blueprint);
 
-      // Increment usage count if not Pro
+      // Decrement beta quota or increment free usage count if not Pro
       if (!isPro) {
-        const nextUsage = Math.min(usageCount + 1, maxUsage);
-        setUsageCount(nextUsage);
-        try {
-          localStorage.setItem(STORAGE_KEY_USAGE, String(nextUsage));
-        } catch (e) {
-          // ignore
+        if (hasBetaGenerations) {
+          decrementBetaLocally();
+        } else {
+          const nextUsage = Math.min(usageCount + 1, 5);
+          setUsageCount(nextUsage);
+          try {
+            localStorage.setItem(STORAGE_KEY_USAGE, String(nextUsage));
+          } catch (e) {
+            // ignore
+          }
         }
       }
 
@@ -222,7 +227,11 @@ function AppContent() {
     ? savedProjects.some((p) => p.id === currentBlueprint.id)
     : false;
 
-  const usageRemaining = Math.max(0, maxUsage - usageCount);
+  const usageRemaining = isPro
+    ? 999
+    : isBeta && betaGenerationsRemaining > 0
+    ? betaGenerationsRemaining
+    : Math.max(0, 5 - usageCount);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FFF8F5] text-[#1F1B18] selection:bg-[#F0DCD0] selection:text-[#7A5338]">

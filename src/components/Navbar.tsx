@@ -21,7 +21,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSaved,
   onResetToHome,
 }) => {
-  const { isPro } = useAuth();
+  const { isPro, isBeta, betaGenerationsRemaining } = useAuth();
 
   return (
     <header className="w-full border-b border-[#E5DDD2] bg-[#FFF8F5]/90 backdrop-blur-sm sticky top-0 z-30">
@@ -60,8 +60,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             id="nav-usage-badge"
             className="text-xs font-medium text-[#50443D] bg-[#F3EDE4] border border-[#E5DDD2] px-3 py-1.5 rounded-full hidden md:flex items-center gap-1.5"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-[#7A5338]" />
-            <span>{isPro ? 'Pro: Unlimited' : `Usage: ${usageCount}/${maxUsage}`}</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${isPro ? 'bg-emerald-600' : isBeta && betaGenerationsRemaining > 0 ? 'bg-amber-600' : 'bg-[#7A5338]'}`} />
+            <span>
+              {isPro
+                ? 'Pro: Unlimited'
+                : isBeta && betaGenerationsRemaining > 0
+                ? `Beta: ${betaGenerationsRemaining} left`
+                : `Usage: ${usageCount}/${maxUsage}`}
+            </span>
           </div>
 
           {/* Saved Projects Button */}

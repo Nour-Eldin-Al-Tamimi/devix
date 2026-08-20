@@ -4,6 +4,11 @@ import dotenv from 'dotenv';
 import { initializeApp, getApps, App } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import {
+  buildGeminiPrompt,
+  validateAndEnforceConsistency,
+  generateBespokeFallbackProject,
+} from './generator';
 
 dotenv.config();
 
@@ -403,6 +408,241 @@ async function checkUserIsPro(uid: string): Promise<boolean> {
   return false;
 }
 
+// Pre-configured list of 20 secure random Beta Access Codes
+const INITIAL_BETA_CODES = [
+  'DEVIX-BETA-7K9M2P4X',
+  'DEVIX-BETA-R3V8N5TW',
+  'DEVIX-BETA-Q2J6Y8FD',
+  'DEVIX-BETA-L4H9Z1CX',
+  'DEVIX-BETA-9D3W7B2N',
+  'DEVIX-BETA-P8M4K6YJ',
+  'DEVIX-BETA-T2R5X9VF',
+  'DEVIX-BETA-C7B1H4NQ',
+  'DEVIX-BETA-W6Z3P8MD',
+  'DEVIX-BETA-E5Y9K2LT',
+  'DEVIX-BETA-A1X4R7VP',
+  'DEVIX-BETA-M8Q2D6WN',
+  'DEVIX-BETA-H3J7T9KF',
+  'DEVIX-BETA-B5N1Y4PZ',
+  'DEVIX-BETA-V9L6C2RH',
+  'DEVIX-BETA-F4T8W3XQ',
+  'DEVIX-BETA-K7P2M9YD',
+  'DEVIX-BETA-Z1R5N8TB',
+  'DEVIX-BETA-Y3K7X2VF',
+  'DEVIX-BETA-N9D4P6MQ',
+];
+
+function getValidBetaCodesSet(): Set<string> {
+  const codes = new Set<string>(INITIAL_BETA_CODES);
+  if (process.env.DEVIX_BETA_CODES) {
+    process.env.DEVIX_BETA_CODES.split(',').forEach((c) => {
+      const trimmed = c.trim().toUpperCase();
+      if (trimmed) codes.add(trimmed);
+    });
+  }
+  return codes;
+}
+
+// In-memory beta code tracker and quota tracker for server-authoritative state
+const memoryBetaRedemptions = new Map<string, { redeemedBy: string; redeemedAt: string }>();
+const memoryBetaUserQuota = new Map<string, number>();
+
+// Atomically redeem a Beta Access Code and grant 100 free generations
+async function redeemBetaCodeInFirestore(
+  rawCode: string,
+  userId: string
+): Promise<{
+  success: boolean;
+  generationsGranted: number;
+  generationsRemaining: number;
+  error?: string;
+  code?: string;
+  status: number;
+}> {
+  const normalizedCode = (rawCode || '').trim().toUpperCase();
+  const validCodes = getValidBetaCodesSet();
+
+  if (!normalizedCode || !normalizedCode.startsWith('DEVIX-BETA-') || normalizedCode.length < 12) {
+    return {
+      success: false,
+      generationsGranted: 0,
+      generationsRemaining: 0,
+      error: 'Invalid Beta Code format. Expected format: DEVIX-BETA-XXXXXXXX',
+      code: 'INVALID_FORMAT',
+      status: 400,
+    };
+  }
+
+  const now = new Date().toISOString();
+
+  // Validate that code is in the allowed set
+  if (!validCodes.has(normalizedCode)) {
+    return {
+      success: false,
+      generationsGranted: 0,
+      generationsRemaining: 0,
+      error: 'Invalid Beta Access Code. Please verify your code and try again.',
+      code: 'INVALID_CODE',
+      status: 400,
+    };
+  }
+
+  // Check in-memory redemption registry first
+  if (memoryBetaRedemptions.has(normalizedCode)) {
+    return {
+      success: false,
+      generationsGranted: 0,
+      generationsRemaining: 0,
+      error: 'This Beta Access Code has already been redeemed.',
+      code: 'ALREADY_REDEEMED',
+      status: 409,
+    };
+  }
+
+  const adminFirestore = getAdminFirestore();
+
+  if (adminFirestore) {
+    try {
+      const result = await adminFirestore.runTransaction(async (transaction) => {
+        const codeDocRef = adminFirestore.collection('beta_codes').doc(normalizedCode);
+        const codeSnap = await transaction.get(codeDocRef);
+
+        if (codeSnap.exists) {
+          const codeData = codeSnap.data();
+          if (codeData?.status === 'redeemed') {
+            throw new Error('CODE_ALREADY_REDEEMED');
+          }
+          transaction.update(codeDocRef, {
+            status: 'redeemed',
+            redeemed_by: userId,
+            redeemed_at: now,
+          });
+        } else {
+          transaction.set(codeDocRef, {
+            code: normalizedCode,
+            status: 'redeemed',
+            redeemed_by: userId,
+            redeemed_at: now,
+            generations_granted: 100,
+          });
+        }
+
+        let newRemaining = 100;
+        if (userId) {
+          const userDocRef = adminFirestore.collection('users').doc(userId);
+          const userSnap = await transaction.get(userDocRef);
+          const currentRemaining = userSnap.exists ? Number(userSnap.data()?.betaGenerationsRemaining || 0) : 0;
+          newRemaining = currentRemaining + 100;
+
+          transaction.set(
+            userDocRef,
+            {
+              isBeta: true,
+              betaGenerationsRemaining: newRemaining,
+              redeemedBetaCode: normalizedCode,
+              betaRedeemedAt: now,
+            },
+            { merge: true }
+          );
+        }
+
+        return {
+          generationsGranted: 100,
+          generationsRemaining: newRemaining,
+        };
+      });
+
+      // Synchronize in-memory tracker
+      memoryBetaRedemptions.set(normalizedCode, { redeemedBy: userId, redeemedAt: now });
+      if (userId) {
+        memoryBetaUserQuota.set(userId, result.generationsRemaining);
+      }
+
+      return {
+        success: true,
+        generationsGranted: result.generationsGranted,
+        generationsRemaining: result.generationsRemaining,
+        status: 200,
+      };
+    } catch (err: any) {
+      if (err.message === 'CODE_ALREADY_REDEEMED') {
+        memoryBetaRedemptions.set(normalizedCode, { redeemedBy: userId, redeemedAt: now });
+        return {
+          success: false,
+          generationsGranted: 0,
+          generationsRemaining: 0,
+          error: 'This Beta Access Code has already been redeemed.',
+          code: 'ALREADY_REDEEMED',
+          status: 409,
+        };
+      }
+      console.warn(
+        `[Beta Redemption] Firestore transaction note (${err?.message}), using server-authoritative fallback:`,
+        err
+      );
+    }
+  }
+
+  // Server-authoritative fallback execution
+  memoryBetaRedemptions.set(normalizedCode, { redeemedBy: userId, redeemedAt: now });
+  const currentQuota = memoryBetaUserQuota.get(userId) || 0;
+  const newQuota = currentQuota + 100;
+  if (userId) {
+    memoryBetaUserQuota.set(userId, newQuota);
+  }
+
+  return {
+    success: true,
+    generationsGranted: 100,
+    generationsRemaining: newQuota,
+    status: 200,
+  };
+}
+
+// Atomically check and consume 1 beta generation if available
+async function checkAndConsumeBetaQuota(uid: string): Promise<{ hasBeta: boolean; remaining: number }> {
+  if (!uid) return { hasBeta: false, remaining: 0 };
+  const adminFirestore = getAdminFirestore();
+
+  if (adminFirestore) {
+    try {
+      return await adminFirestore.runTransaction(async (transaction) => {
+        const userRef = adminFirestore.collection('users').doc(uid);
+        const userDoc = await transaction.get(userRef);
+        if (!userDoc.exists) {
+          return { hasBeta: false, remaining: 0 };
+        }
+        const data = userDoc.data();
+        const remaining = Number(data?.betaGenerationsRemaining || 0);
+        if (remaining > 0) {
+          const nextRemaining = Math.max(0, remaining - 1);
+          transaction.update(userRef, {
+            betaGenerationsRemaining: nextRemaining,
+          });
+          memoryBetaUserQuota.set(uid, nextRemaining);
+          return { hasBeta: true, remaining: nextRemaining };
+        }
+        return { hasBeta: Boolean(data?.isBeta), remaining: 0 };
+      });
+    } catch (e) {
+      console.warn(`[Beta Quota Check] Firestore note for ${uid}, falling back to server memory quota:`, e);
+    }
+  }
+
+  // Memory fallback check
+  const memQuota = memoryBetaUserQuota.get(uid);
+  if (memQuota !== undefined && memQuota > 0) {
+    const nextRemaining = memQuota - 1;
+    memoryBetaUserQuota.set(uid, nextRemaining);
+    return { hasBeta: true, remaining: nextRemaining };
+  }
+  if (memQuota !== undefined && memQuota === 0) {
+    return { hasBeta: true, remaining: 0 };
+  }
+
+  return { hasBeta: false, remaining: 0 };
+}
+
 // Lazy initialize Gemini client
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -466,227 +706,7 @@ function generateFallbackProject(params: {
   projectType: string;
   availableTime: string;
 }) {
-  const { level, skills, goal, projectType, availableTime } = params;
-  const primarySkills = skills.length > 0 ? skills.slice(0, 3).join(', ') : 'TypeScript, React, Node.js';
-  const mainSkill = skills[0] || 'Modern Full-Stack';
-
-  return {
-    id: 'proj_' + Math.random().toString(36).substring(2, 9),
-    title: `${mainSkill} Real-Time Event Stream Hub & Analytics Lake`,
-    tagline: `An ultra-responsive distributed event ingestion engine and interactive telemetry dashboard built with ${primarySkills}.`,
-    level,
-    skills: skills.length > 0 ? skills : ['Python', 'React', 'SQL'],
-    goal,
-    projectType: projectType || 'Web App',
-    availableTime: availableTime || '1 Day',
-    matchScore: 97,
-    overview: `A production-grade telemetry and real-time observability platform designed specifically to demonstrate enterprise architecture principles. It showcases asynchronous batch processing, robust SQL aggregation, schema versioning, and fluid client-side UI rendering tailored for ${level} developers targeting ${goal.toLowerCase()}.`,
-    problemStatement: `Modern software platforms produce massive unstructured telemetry streams. Engineers struggle to build systems that buffer spikes, validate high-velocity payloads, and render live metrics with zero UI jank.`,
-    targetAudience: `Engineering leads, DevOps specialists, and data engineers looking for live system telemetry.`,
-    whyItProvesSkills: [
-      `Demonstrates mastery of asynchronous I/O and stream ingestion with ${skills.join(' and ') || 'modern stacks'}.`,
-      `Includes indexed SQL schema optimization and complex analytical queries that stand out on technical interviews.`,
-      `Solves realistic edge cases: backpressure handling, reconnecting WebSocket streams, and optimistic UI updates.`,
-      `Directly aligns with ${goal} by providing concrete technical talking points and measurable impact metrics.`
-    ],
-    architecture: {
-      summary: `Micro-monolith architecture utilizing a fast REST/WebSocket gateway, background task worker with backpressure queues, and an optimized relational datastore with materialized rollups.`,
-      frontend: `React 19 with optimistic state transitions, virtualized timeline rendering, and reactive canvas metrics.`,
-      backend: `Modular API service with rate limiting, payload validation (Zod/Pydantic), and structured telemetry logs.`,
-      database: `Relational SQL store with composite indexing, partition strategies by timestamp, and JSONB event storage.`,
-      authAndSecurity: `Role-based access tokens with JWT/session cookies, CSRF protection, and strict input sanitization.`,
-      deployment: `Containerized Docker setup with automated health check probes and GitHub Actions CI validation.`
-    },
-    databaseSchema: [
-      {
-        table: 'events_log',
-        description: 'High-throughput append-only event stream storage.',
-        columns: [
-          { name: 'id', type: 'UUID PRIMARY KEY', desc: 'Unique event identifier' },
-          { name: 'source_service', type: 'VARCHAR(64) INDEX', desc: 'Microservice or client producing the event' },
-          { name: 'event_type', type: 'VARCHAR(128) INDEX', desc: 'Categorical tag e.g. user_action, error_spike' },
-          { name: 'payload', type: 'JSONB', desc: 'Flexible event metadata payload' },
-          { name: 'latency_ms', type: 'INTEGER', desc: 'Measured operational latency' },
-          { name: 'created_at', type: 'TIMESTAMPTZ INDEX', desc: 'ISO timestamp partitioned monthly' }
-        ]
-      },
-      {
-        table: 'hourly_metric_aggregates',
-        description: 'Pre-computed rollups for lightning-fast dashboard analytics.',
-        columns: [
-          { name: 'time_bucket', type: 'TIMESTAMPTZ', desc: 'Start of hour window' },
-          { name: 'source_service', type: 'VARCHAR(64)', desc: 'Service identifier' },
-          { name: 'total_count', type: 'BIGINT', desc: 'Total events processed in window' },
-          { name: 'p95_latency_ms', type: 'FLOAT', desc: '95th percentile latency calculation' },
-          { name: 'error_rate', type: 'FLOAT', desc: 'Percentage of failing transactions' }
-        ]
-      }
-    ],
-    apiEndpoints: [
-      {
-        method: 'POST',
-        path: '/api/v1/events/batch',
-        description: 'Ingests and validates high-volume batches of events with atomic rollback.',
-        samplePayload: '{\n  "batch_id": "b_99182",\n  "events": [\n    {\n      "type": "checkout_completed",\n      "latency_ms": 142,\n      "payload": { "cart_id": "c_402", "amount": 89.5 }\n    }\n  ]\n}',
-        responsePreview: '{\n  "status": "acknowledged",\n  "processed": 1,\n  "duration_ms": 18\n}'
-      },
-      {
-        method: 'GET',
-        path: '/api/v1/metrics/timeseries?window=24h',
-        description: 'Returns pre-aggregated metric rollups with sub-10ms query latency.',
-        responsePreview: '{\n  "window": "24h",\n  "points": [{ "timestamp": "2026-08-19T18:00:00Z", "avg_latency": 112, "errors": 0 }]\n}'
-      }
-    ],
-    milestones: [
-      {
-        phaseNumber: 1,
-        phase: 'Phase 1',
-        title: 'Core Engine & Database Schema',
-        duration: availableTime === '1 Day' ? '3-4 Hours' : 'Day 1-2',
-        tasks: [
-          { id: 't1', task: 'Set up repository structure, linter, and database migration scripts.', details: 'Establish strong typing, connection pooling, and initial schema DDL.' },
-          { id: 't2', task: 'Implement the batch event ingestion endpoint with robust validation.', details: 'Ensure schema rejections return RFC-7807 compliant error objects.' },
-          { id: 't3', task: 'Write comprehensive integration tests for ingestion edge cases.', details: 'Test burst throughput and malformed JSON payloads.' }
-        ]
-      },
-      {
-        phaseNumber: 2,
-        phase: 'Phase 2',
-        title: 'Interactive Dashboard & Real-Time Sync',
-        duration: availableTime === '1 Day' ? '3-4 Hours' : 'Day 3-4',
-        tasks: [
-          { id: 't4', task: 'Build responsive telemetry dashboard with query time-window filter.', details: 'Incorporate live chart updates and summary metric cards.' },
-          { id: 't5', task: 'Implement server-sent events (SSE) or WebSocket live feed.', details: 'Handle auto-reconnect with exponential backoff on connection drop.' },
-          { id: 't6', task: 'Add export to CSV/JSON and drill-down modal for event inspection.', details: 'Enable deep filtering by event type and latency threshold.' }
-        ]
-      },
-      {
-        phaseNumber: 3,
-        phase: 'Phase 3',
-        title: 'Polish, Benchmarks & Portfolio Assets',
-        duration: availableTime === '1 Day' ? '1-2 Hours' : 'Day 5',
-        tasks: [
-          { id: 't7', task: 'Benchmark throughput with load-testing script (k6 or autocannon).', details: 'Document P99 latencies under 1,000 req/sec to highlight on your CV.' },
-          { id: 't8', task: 'Generate polished README with architectural diagrams and GIF demo.', details: 'Add instructions for single-command Docker deployment.' }
-        ]
-      }
-    ],
-    cvBulletPoints: [
-      `Engineered a real-time event analytics platform in ${primarySkills}, achieving sub-15ms query latencies across 100k+ mock event streams.`,
-      `Architected an optimized relational schema with time-bucketed aggregation rollups, reducing analytical compute load by 60%.`,
-      `Built resilient ingestion pipelines with backpressure throttling and automated error recovery under simulated high-load bursts.`,
-      `Delivered a fluid developer dashboard featuring live WebSocket metrics, optimistic state transitions, and customizable telemetry filters.`
-    ],
-    interviewQuestions: [
-      {
-        question: `How did you design the event ingestion to handle traffic spikes without crashing the database?`,
-        idealAnswer: `I separated ingestion validation from persistent disk writes by buffering incoming events into an in-memory queue/batch worker. Instead of executing 1,000 individual SQL inserts, the worker commits bulk batch inserts every 200ms or 100 items.`,
-        talkingPoint: `Mention batch insertion, database connection pool limits, and how unbuffered writes lead to connection starvation.`,
-        pitfallsToAvoid: `Don't say "I just put it in a global array" without discussing concurrency, crash durability, or memory limits.`
-      },
-      {
-        question: `Why did you choose your specific database indexing strategy?`,
-        idealAnswer: `Because analytical queries frequently filter by service name within a specific time window, I established a composite index on (source_service, created_at DESC). This turns what would be an expensive table scan into an efficient index range scan.`,
-        talkingPoint: `Highlight query EXPLAIN plans and the cost difference between sequential scans and indexed bitmap scans.`,
-        pitfallsToAvoid: `Don't say you indexed every column, which degrades write throughput.`
-      }
-    ],
-    starterFiles: [
-      {
-        filename: 'schema.sql',
-        language: 'sql',
-        description: 'Production-ready database schema with indexing and aggregation view.',
-        code: `-- PostgreSQL / SQLite Telemetry & Event Stream Schema
-CREATE TABLE IF NOT EXISTS events_log (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  source_service VARCHAR(64) NOT NULL,
-  event_type VARCHAR(128) NOT NULL,
-  payload JSONB NOT NULL,
-  latency_ms INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Composite index for fast service + time-range queries
-CREATE INDEX IF NOT EXISTS idx_events_service_created 
-ON events_log(source_service, created_at DESC);
-
--- Index for filtering high-latency anomalies
-CREATE INDEX IF NOT EXISTS idx_events_latency 
-ON events_log(latency_ms) WHERE latency_ms > 500;
-`
-      },
-      {
-        filename: 'server_snippet.ts',
-        language: 'typescript',
-        description: 'Batch event ingestion route with validation & timing metrics.',
-        code: `import express, { Request, Response } from 'express';
-
-export const eventRouter = express.Router();
-
-interface EventPayload {
-  source_service: string;
-  event_type: string;
-  payload: Record<string, unknown>;
-  latency_ms?: number;
-}
-
-eventRouter.post('/events/batch', async (req: Request, res: Response) => {
-  const startTime = process.hrtime.bigint();
-  const { events } = req.body as { events: EventPayload[] };
-
-  if (!Array.isArray(events) || events.length === 0) {
-    return res.status(400).json({ error: 'Batch must contain at least 1 event.' });
-  }
-
-  try {
-    const insertedCount = events.length;
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1_000_000;
-
-    return res.status(202).json({
-      status: 'acknowledged',
-      count: insertedCount,
-      processing_time_ms: Number(durationMs.toFixed(2))
-    });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to ingest event stream.' });
-  }
-});
-`
-      }
-    ],
-    readmeMarkdown: `# ${mainSkill} Real-Time Event Stream Hub & Analytics Lake
-
-> An ultra-responsive distributed event ingestion engine and interactive telemetry dashboard built with **${primarySkills}**.
-
-## 🌟 Key Highlights for Recruiters
-- **High-Throughput Ingestion**: Batch insertion architecture buffering high-velocity streams with sub-15ms response times.
-- **Optimized SQL Schema**: Composite indexing and pre-computed rollup tables reducing analytical query latency by 60%.
-- **Live Observability**: Real-time event visualizer with WebSocket sync and responsive threshold filters.
-
-## 🚀 Quick Start
-\`\`\`bash
-# 1. Clone & install
-git clone https://github.com/yourname/event-stream-hub.git
-cd event-stream-hub
-npm install
-
-# 2. Configure environment
-cp .env.example .env
-
-# 3. Run database migrations and dev server
-npm run migrate
-npm run dev
-\`\`\`
-
-## 📐 Architecture
-- **Frontend**: React 19, Tailwind CSS, Canvas Telemetry Charts.
-- **Backend**: TypeScript / Node.js or Python, Connection Pooler, REST/WS Gateway.
-- **Database**: PostgreSQL / SQLite with composite index strategy.
-`,
-    createdAt: new Date().toISOString(),
-    tags: [level, ...skills, projectType, goal]
-  };
+  return generateBespokeFallbackProject(params);
 }
 
 // --- API ROUTES ---
@@ -704,12 +724,26 @@ app.post(['/api/generate-project', '/generate-project'], async (req: Request, re
   let clientKey = `ip:${clientIp}`;
   let userTier: 'unauth' | 'free' | 'pro' = 'unauth';
   let isProUser = false;
+  let isBetaUser = false;
+  let betaRemaining = 0;
 
   try {
     const authUser = await authenticateUserFromRequest(req);
     if (authUser && authUser.uid) {
       isProUser = await checkUserIsPro(authUser.uid);
-      userTier = isProUser ? 'pro' : 'free';
+      if (isProUser) {
+        userTier = 'pro';
+      } else {
+        const betaQuota = await checkAndConsumeBetaQuota(authUser.uid);
+        if (betaQuota.hasBeta && betaQuota.remaining >= 0) {
+          isBetaUser = true;
+          betaRemaining = betaQuota.remaining;
+          userTier = 'free';
+          res.setHeader('X-Beta-Generations-Remaining', String(betaRemaining));
+        } else {
+          userTier = 'free';
+        }
+      }
       clientKey = `user:${authUser.uid}`;
 
       const ipCheck = projectRateLimiter.checkRateLimit(`ip:${clientIp}`, isProUser ? 'pro' : 'free');
@@ -729,7 +763,7 @@ app.post(['/api/generate-project', '/generate-project'], async (req: Request, re
       }
     }
 
-    const rateCheck = projectRateLimiter.checkRateLimit(clientKey, userTier);
+    const rateCheck = projectRateLimiter.checkRateLimit(clientKey, isProUser ? 'pro' : userTier);
     if (!rateCheck.allowed) {
       res.setHeader('Retry-After', String(rateCheck.retryAfterSeconds || 5));
       res.setHeader('X-RateLimit-Limit', String(rateCheck.limit));
@@ -750,6 +784,9 @@ app.post(['/api/generate-project', '/generate-project'], async (req: Request, re
     res.setHeader('X-RateLimit-Limit', String(rateCheck.limit));
     res.setHeader('X-RateLimit-Remaining', String(rateCheck.remaining));
     res.setHeader('X-RateLimit-Reset', String(rateCheck.resetTimestamp));
+    if (isBetaUser) {
+      res.setHeader('X-Beta-Generations-Remaining', String(betaRemaining));
+    }
 
     const { level, skills, goal, projectType, availableTime } = req.body;
 
@@ -757,181 +794,109 @@ app.post(['/api/generate-project', '/generate-project'], async (req: Request, re
       return res.status(400).json({ error: 'Level and Goal are required.' });
     }
 
+    const sanitizedParams = {
+      level: level || 'Junior',
+      skills: Array.isArray(skills) && skills.length > 0 ? skills : ['Python', 'React', 'SQL'],
+      goal: goal || 'Strengthen my CV',
+      projectType: projectType || 'Web App',
+      availableTime: availableTime || '1 Day'
+    };
+
     const ai = getGeminiClient();
 
     if (!ai) {
       console.log('Gemini API key not found or default, using smart bespoke fallback generator.');
-      const fallback = generateFallbackProject({
-        level: level || 'Beginner',
-        skills: Array.isArray(skills) ? skills : ['Python', 'React', 'SQL'],
-        goal: goal || 'Strengthen my CV',
-        projectType: projectType || 'Web App',
-        availableTime: availableTime || '1 Day'
-      });
+      const fallback = generateBespokeFallbackProject(sanitizedParams);
       return res.json(fallback);
     }
 
-    const prompt = `You are DEVIX, an elite engineering mentor and career strategist for software developers.
-A developer with the following profile is requesting a custom, tailored project blueprint that will decisively PROVE their skills to hiring managers, standout on their CV/portfolio, and provide rich technical interview talking points:
-
-DEVELOPER PROFILE:
-- Experience Level: ${level}
-- Known Skills & Technologies: ${Array.isArray(skills) && skills.length > 0 ? skills.join(', ') : 'Modern Web Stack'}
-- Core Career Goal: ${goal}
-- Preferred Project Type: ${projectType || 'Web App'}
-- Available Time Commitment: ${availableTime || '1 Day'}
-
-Generate an exceptional, highly specific, production-grade project blueprint.
-DO NOT suggest generic, overdone tutorial projects like basic todo lists, simple weather apps, or generic calculators.
-Instead, craft a realistic, impressive engineering project that solves a genuine problem, showcases deep architectural decisions, edge-case handling, and gives them standout XYZ-format resume bullets.
-
-Return ONLY a valid JSON object strictly matching this schema:
-{
-  "title": "Distinctive, punchy project title",
-  "tagline": "A compelling 1-sentence description of the project and value proposition",
-  "matchScore": 98,
-  "overview": "2-3 rich paragraphs explaining the system, why it was chosen for their level, and the core problem it tackles.",
-  "problemStatement": "Clear description of the real-world friction or engineering challenge this project addresses.",
-  "targetAudience": "Who would use this or who this demonstrates value to.",
-  "whyItProvesSkills": [
-    "3-4 concrete reasons this project proves deep competence with their exact skills and avoids tutorial clichés"
-  ],
-  "architecture": {
-    "summary": "High-level overview of system design and separation of concerns",
-    "frontend": "Frontend architectural choices, state management, and UX design",
-    "backend": "API patterns, validation, concurrency, and services",
-    "database": "Data modeling, indexing, relations, and caching strategy",
-    "authAndSecurity": "Security measures, token handling, and input sanitization",
-    "deployment": "CI/CD, containerization, and hosting recommendations"
-  },
-  "databaseSchema": [
-    {
-      "table": "table_name",
-      "description": "Purpose of table",
-      "columns": [
-        { "name": "column_name", "type": "DATA_TYPE", "desc": "Column role and constraints" }
-      ]
-    }
-  ],
-  "apiEndpoints": [
-    {
-      "method": "GET or POST or PUT or DELETE",
-      "path": "/api/v1/resource",
-      "description": "Endpoint purpose",
-      "samplePayload": "Optional sample JSON string or empty",
-      "responsePreview": "Sample JSON string response"
-    }
-  ],
-  "milestones": [
-    {
-      "phaseNumber": 1,
-      "phase": "Phase 1",
-      "title": "Phase Title",
-      "duration": "Estimated time for phase",
-      "tasks": [
-        { "id": "t1", "task": "Concrete task description", "details": "Specific technical step to take" }
-      ]
-    },
-    {
-      "phaseNumber": 2,
-      "phase": "Phase 2",
-      "title": "Phase Title",
-      "duration": "Estimated time for phase",
-      "tasks": [
-        { "id": "t4", "task": "Concrete task description", "details": "Specific technical step to take" }
-      ]
-    },
-    {
-      "phaseNumber": 3,
-      "phase": "Phase 3",
-      "title": "Phase Title",
-      "duration": "Estimated time for phase",
-      "tasks": [
-        { "id": "t7", "task": "Concrete task description", "details": "Specific technical step to take" }
-      ]
-    }
-  ],
-  "cvBulletPoints": [
-    "3-4 strong Google XYZ style resume bullet points: Accomplished [X] as measured by [Y], by doing [Z]"
-  ],
-  "interviewQuestions": [
-    {
-      "question": "A tough technical question a senior interviewer would ask about this project",
-      "idealAnswer": "Clear, structured technical answer explaining trade-offs and decisions",
-      "talkingPoint": "Key concept to emphasize",
-      "pitfallsToAvoid": "Common mistake or weak answer to steer clear of"
-    },
-    {
-      "question": "Second challenging architectural or scalability question",
-      "idealAnswer": "Ideal technical response",
-      "talkingPoint": "Key concept to emphasize",
-      "pitfallsToAvoid": "Common mistake or weak answer to steer clear of"
-    }
-  ],
-  "starterFiles": [
-    {
-      "filename": "e.g. schema.sql or server.ts or App.tsx",
-      "language": "e.g. sql, typescript, python",
-      "description": "What this starter code provides",
-      "code": "A high-quality, fully written starter code snippet (not just comments)"
-    },
-    {
-      "filename": "e.g. api_handler.ts or worker.py",
-      "language": "e.g. typescript, python",
-      "description": "What this starter code provides",
-      "code": "A high-quality, fully written starter code snippet (not just comments)"
-    }
-  ],
-  "readmeMarkdown": "A complete, beautifully formatted README.md markdown string ready to copy into GitHub."
-}`;
+    const prompt = buildGeminiPrompt(sanitizedParams);
 
     const rawText = await callGeminiWithModelFallbacks(ai, prompt);
-    let parsedData;
+    let parsedData: any = null;
 
     if (rawText) {
       try {
-        parsedData = JSON.parse(rawText);
+        let cleanText = rawText.trim();
+        if (cleanText.startsWith('```json')) {
+          cleanText = cleanText.substring(7);
+        } else if (cleanText.startsWith('```')) {
+          cleanText = cleanText.substring(3);
+        }
+        if (cleanText.endsWith('```')) {
+          cleanText = cleanText.substring(0, cleanText.length - 3);
+        }
+        cleanText = cleanText.trim();
+        parsedData = JSON.parse(cleanText);
       } catch (parseErr) {
         console.error('Failed to parse JSON response from Gemini:', parseErr);
         parsedData = null;
       }
     }
 
-    if (!parsedData) {
-      parsedData = generateFallbackProject({
-        level,
-        skills: Array.isArray(skills) ? skills : ['Python', 'React', 'SQL'],
-        goal,
-        projectType,
-        availableTime
-      });
+    let fullBlueprint;
+    if (parsedData && typeof parsedData === 'object' && parsedData.title) {
+      fullBlueprint = validateAndEnforceConsistency(parsedData, sanitizedParams);
+    } else {
+      fullBlueprint = generateBespokeFallbackProject(sanitizedParams);
     }
-
-    const fullBlueprint = {
-      id: 'proj_' + Math.random().toString(36).substring(2, 9),
-      level,
-      skills: Array.isArray(skills) ? skills : [],
-      goal,
-      projectType,
-      availableTime,
-      createdAt: new Date().toISOString(),
-      tags: [level, ...(Array.isArray(skills) ? skills : []), projectType, goal].filter(Boolean),
-      ...parsedData,
-    };
 
     return res.json(fullBlueprint);
   } catch (error: any) {
     console.error('Error generating project:', error);
-    const fallback = generateFallbackProject({
-      level: req.body.level || 'Beginner',
-      skills: req.body.skills || ['Python', 'React', 'SQL'],
-      goal: req.body.goal || 'Strengthen my CV',
-      projectType: req.body.projectType || 'Web App',
-      availableTime: req.body.availableTime || '1 Day'
+    const fallback = generateBespokeFallbackProject({
+      level: req.body?.level || 'Junior',
+      skills: Array.isArray(req.body?.skills) && req.body.skills.length > 0 ? req.body.skills : ['Python', 'React', 'SQL'],
+      goal: req.body?.goal || 'Strengthen my CV',
+      projectType: req.body?.projectType || 'Web App',
+      availableTime: req.body?.availableTime || '1 Day'
     });
     return res.json(fallback);
   } finally {
     projectRateLimiter.releaseInFlight(clientKey);
+  }
+});
+
+// --- BETA ACCESS CODE REDEMPTION ---
+app.post(['/api/beta/redeem', '/beta/redeem'], async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/json');
+  try {
+    const { code } = req.body || {};
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please enter a Beta Access Code.',
+        code: 'MISSING_CODE',
+      });
+    }
+
+    const authUser = await authenticateUserFromRequest(req);
+    const clientIp = projectRateLimiter.extractClientIp(req);
+    const effectiveUserId = authUser?.uid || req.body?.userId || ('guest_' + clientIp.replace(/[^a-zA-Z0-9]/g, '_'));
+
+    const result = await redeemBetaCodeInFirestore(code, effectiveUserId);
+
+    if (!result.success) {
+      return res.status(result.status || 400).json({
+        success: false,
+        error: result.error,
+        code: result.code,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      generationsGranted: result.generationsGranted,
+      generationsRemaining: result.generationsRemaining,
+      message: 'Beta Access Activated! You have 100 free generations.',
+      userId: effectiveUserId,
+    });
+  } catch (err: any) {
+    console.error('Error in /api/beta/redeem:', err);
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Internal server error redeeming Beta Code.',
+    });
   }
 });
 
