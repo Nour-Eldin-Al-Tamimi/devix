@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { initializeApp, getApps, App } from 'firebase-admin/app';
+import { initializeApp, getApps, App, cert } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import {
@@ -223,9 +223,29 @@ function getAdminApp(): App | null {
     try {
       const existingApps = getApps();
       if (existingApps.length === 0) {
-        adminApp = initializeApp({
-          projectId: FIREBASE_CONFIG.projectId,
-        });
+        const serviceAccountRaw =
+          process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
+          process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+
+        if (serviceAccountRaw && serviceAccountRaw.trim().length > 0) {
+          try {
+            const serviceAccount = JSON.parse(serviceAccountRaw);
+            adminApp = initializeApp({
+              credential: cert(serviceAccount),
+              projectId: serviceAccount.project_id || FIREBASE_CONFIG.projectId,
+            });
+            console.log('[Firebase Admin] Initialized with provided Service Account credential.');
+          } catch (e) {
+            console.warn('Failed to parse service account JSON credential, using default project config:', e);
+            adminApp = initializeApp({
+              projectId: FIREBASE_CONFIG.projectId,
+            });
+          }
+        } else {
+          adminApp = initializeApp({
+            projectId: FIREBASE_CONFIG.projectId,
+          });
+        }
       } else {
         adminApp = existingApps[0]!;
       }
@@ -505,13 +525,29 @@ async function redeemBetaCodeInFirestore(
     try {
       const result = await adminFirestore.runTransaction(async (transaction) => {
         const codeDocRef = adminFirestore.collection('beta_codes').doc(normalizedCode);
-        const codeSnap = await transaction.get(codeDocRef);
+        const userDocRef = userId ? adminFirestore.collection('users').doc(userId) : null;
 
+        // --- READ PHASE: ALL READS MUST OCCUR BEFORE ANY WRITES ---
+        const codeSnap = await transaction.get(codeDocRef);
+        const userSnap = userDocRef ? await transaction.get(userDocRef) : null;
+
+        // Validate code status from read
         if (codeSnap.exists) {
           const codeData = codeSnap.data();
           if (codeData?.status === 'redeemed') {
             throw new Error('CODE_ALREADY_REDEEMED');
           }
+        }
+
+        // Calculate quota
+        let newRemaining = 100;
+        if (userSnap && userSnap.exists) {
+          const currentRemaining = Number(userSnap.data()?.betaGenerationsRemaining || 0);
+          newRemaining = currentRemaining + 100;
+        }
+
+        // --- WRITE PHASE: ALL WRITES AFTER ALL READS ---
+        if (codeSnap.exists) {
           transaction.update(codeDocRef, {
             status: 'redeemed',
             redeemed_by: userId,
@@ -527,13 +563,7 @@ async function redeemBetaCodeInFirestore(
           });
         }
 
-        let newRemaining = 100;
-        if (userId) {
-          const userDocRef = adminFirestore.collection('users').doc(userId);
-          const userSnap = await transaction.get(userDocRef);
-          const currentRemaining = userSnap.exists ? Number(userSnap.data()?.betaGenerationsRemaining || 0) : 0;
-          newRemaining = currentRemaining + 100;
-
+        if (userDocRef) {
           transaction.set(
             userDocRef,
             {
